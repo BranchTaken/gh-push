@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+trap "cd $(pwd)" EXIT
+trap "exit 1" SIGINT
+pushd $(git rev-parse --show-toplevel) > /dev/null || (echo "Not in a git repo."; exit 1)
+
+git push $@
+if [ $? -ne 0 ]
+then
+   exit $?
+fi
+
+docker compose build pre-push
+if [[ $? -eq 0 ]]
+then
+    _STATE="success"
+else
+    _STATE="failure"
+fi
+
+
+_TREE=$(git cat-file -p HEAD | head -n 1)
+
+while gh api /repos/BranchTaken/Hemlock/statuses/$(git rev-parse HEAD) -f state=${_STATE} \
+  -f context="Hemlock Push" -f description="$_TREE" ; [ $? -ne 0 ]
+do
+    echo "Retrying set commit status to \"$_STATE\"."
+    sleep 3
+done
