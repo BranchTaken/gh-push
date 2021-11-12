@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
-trap "cd $(pwd)" EXIT
+HEMLOCK_PRE_PUSH_CLONE_PATH=.pre_push_clone
+_CWD=$(pwd)
+
+trap "rm -rf ${HEMLOCK_PRE_PUSH_CLONE_PATH} && cd ${_CWD}" EXIT
 trap "exit 1" SIGINT
 pushd $(git rev-parse --show-toplevel) > /dev/null || (echo "Not in a git repo."; exit 1)
 
@@ -10,6 +13,11 @@ then
    exit $?
 fi
 
+# Docker pre-push image requires this clone.
+rm -rf ${HEMLOCK_PRE_PUSH_CLONE_PATH}
+git clone --single-branch --no-tags -b $(git rev-parse --abbrev-ref HEAD) --bare \
+    . ${HEMLOCK_PRE_CLONE_PATH}
+
 docker compose build pre-push
 if [[ $? -eq 0 ]]
 then
@@ -17,7 +25,6 @@ then
 else
     _STATE="failure"
 fi
-
 
 _TREE=$(git cat-file -p HEAD | head -n 1)
 
