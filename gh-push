@@ -1,36 +1,100 @@
 #!/usr/bin/env bash
 
-HEMLOCK_PRE_PUSH_CLONE_PATH=.pre_push_clone
-_CWD=$(pwd)
+set -e
 
-trap "rm -rf ${HEMLOCK_PRE_PUSH_CLONE_PATH} && cd ${_CWD}" EXIT
-trap "exit 1" SIGINT
-pushd $(git rev-parse --show-toplevel) > /dev/null || (echo "Not in a git repo."; exit 1)
+_DRY_RUN=0
+for _ARG in "$@"
+do
+    case "${_ARG}" in
+    --dry-run | -n)
+        echo "Dry run."
+        _DRY_RUN=1
+        ;;
+    esac
+done
 
-git push $@
-if [ $? -ne 0 ]
+echo "Begin dry run 'git push'..."
+if [ ${_DRY_RUN} -eq 0 ]
 then
-   exit $?
-fi
-
-# Docker pre-push image requires this clone.
-rm -rf ${HEMLOCK_PRE_PUSH_CLONE_PATH}
-git clone --single-branch --no-tags -b $(git rev-parse --abbrev-ref HEAD) --bare \
-    . ${HEMLOCK_PRE_CLONE_PATH}
-
-docker compose build pre-push
-if [[ $? -eq 0 ]]
-then
-    _STATE="success"
+    git push --dry-run $@
 else
-    _STATE="failure"
+    git push $@
 fi
+echo "End dry run 'git push'."
 
 _TREE=$(git cat-file -p HEAD | head -n 1)
+_SHA=$(git rev-parse HEAD)
+_INTERRUPTED=0
+trap "_INTERRUPTED=1" SIGINT
 
-while gh api /repos/BranchTaken/Hemlock/statuses/$(git rev-parse HEAD) -f state=${_STATE} \
-  -f context="Hemlock Push" -f description="$_TREE" ; [ $? -ne 0 ]
-do
-    echo "Retrying set commit status to \"$_STATE\"."
-    sleep 3
-done
+# Arg 1 is GitHub API commit status.
+# Arg 2 is additional description text.
+set_status() {
+    if [ ${_DRY_RUN} -ne 0 ]
+    then
+        return
+    fi
+    
+    _DESCRIPTION="$2, ${_TREE}"
+    _GH_API_RET=0
+    while :
+    do
+        if [ ${_INTERRUPTED} -ne 0 ]
+        then
+            exit 1
+        elif [ ${_GH_API_RET} -ne 0 ]
+        then
+            _GH_API_RET=0
+            echo "Waiting 3 seconds to retry set GitHub commit status to \"$1\"."
+            sleep 3
+        else
+            gh api /repos/{owner}/{repo}/statuses/${_SHA} -f state="$1" -f context="Hemlock Push" \
+              -f description="${_DESCRIPTION}" > /dev/null || _GH_API_RET=1
+            if [ ${_GH_API_RET} -eq 0 ]
+            then
+                echo "Successfully set GitHub commit status to \"$1\", \"${_DESCRIPTION}\"."
+                break
+            fi
+            echo "Failed to set GitHub commit status to \"$1\", \"${_DESCRIPTION}\"."
+        fi
+    done
+}
+
+# Env variable export required for `docker compose build pre-push'.
+export HEMLOCK_PRE_PUSH_CLONE_PATH=.pre_push_clone
+
+trap "rm -rf \"${HEMLOCK_PRE_PUSH_CLONE_PATH}\"; popd > /dev/null || true" EXIT
+pushd $(git rev-parse --show-toplevel) > /dev/null || (echo "Not in a git repo." 1>&2; exit 1)
+
+_DATE=$(date "+%F %T")
+
+# Env variable export required for `docker compose build pre-push'.
+export HEMLOCK_CHECK_OCP_INDENT_BASE_COMMIT=$(git rev-parse remotes/origin/main)
+
+# Bare clone required for `docker compose build pre-push`.
+rm -rf "${HEMLOCK_PRE_PUSH_CLONE_PATH}"
+git clone --single-branch --no-tags -b $(git rev-parse --abbrev-ref HEAD) --bare \
+    . "${HEMLOCK_PRE_PUSH_CLONE_PATH}"
+
+# `pre-push` image includes tests.
+_DOCKER_COMPOSE_BUILD_RET=0
+docker compose build pre-push || _DOCKER_COMPOSE_BUILD_RET=1
+if [ ${_INTERRUPTED} -ne 0 ]
+then
+    exit 1
+fi
+
+git push $@
+
+# `gh api` set status calls usually don't succeed if you run them instantly after a push. Sleeping
+# for a second helps us avoid a likely retry.
+sleep 1
+
+_DATE=$(date "+%F %T")
+if [ ${_DOCKER_COMPOSE_BUILD_RET} -eq 0 ]
+then
+    set_status "success" "${_DATE}"
+else
+    set_status "failure" "${_DATE}"
+fi
+
