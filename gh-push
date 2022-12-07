@@ -34,7 +34,7 @@ set_status() {
     then
         return
     fi
-    
+
     _DESCRIPTION="$2, ${_TREE}"
     _GH_API_RET=0
     while :
@@ -60,25 +60,11 @@ set_status() {
     done
 }
 
-# Env variable export required for `docker compose build pre-push'.
-export HEMLOCK_PRE_PUSH_CLONE_PATH=.pre_push_clone
-
-trap "rm -rf \"${HEMLOCK_PRE_PUSH_CLONE_PATH}\"; popd > /dev/null || true" EXIT
-pushd $(git rev-parse --show-toplevel) > /dev/null || (echo "Not in a git repo." 1>&2; exit 1)
-
 _DATE=$(date "+%F %T")
 
-# Env variable export required for `docker compose build pre-push'.
-export HEMLOCK_CHECK_OCP_INDENT_BASE_COMMIT=$(git rev-parse remotes/origin/main)
-
-# Bare clone required for `docker compose build pre-push`.
-rm -rf "${HEMLOCK_PRE_PUSH_CLONE_PATH}"
-git clone --single-branch --no-tags -b $(git rev-parse --abbrev-ref HEAD) --bare \
-    . "${HEMLOCK_PRE_PUSH_CLONE_PATH}"
-
-# `pre-push` image includes tests.
+# `tested` image includes tests.
 _DOCKER_COMPOSE_BUILD_RET=0
-docker compose build pre-push || _DOCKER_COMPOSE_BUILD_RET=1
+docker compose build tested || _DOCKER_COMPOSE_BUILD_RET=1
 if [ ${_INTERRUPTED} -ne 0 ]
 then
     exit 1
@@ -97,4 +83,3 @@ then
 else
     set_status "failure" "${_DATE}"
 fi
-
